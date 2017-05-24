@@ -139,9 +139,29 @@ class IndexingDask(Algorithm):
                 log.error('FITS file path should be absolute when running in local-filesystem mode')
                 raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
 
-    def temporalDenoise(self, x):
-        log.info('DENOISE: '+x)
-        return acalib.denoise(x, threshold=acalib.noise_level(x))
+    def loadData_Debug(self, x):
+        print('WORKING WITH: '+os.path.basename(x))
+        return acalib.io.loadFITS_PrimmaryOnly(x)
+
+    def runDebug(self, files):
+        self.checkAbsoluteLocalFilePaths(files)
+        log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
+        client = distributed.Client(self.config['SCHEDULER_ADDR'])
+        indexing = lambda x: self.computeIndexing(x)
+        indexing.__name__ = 'computeIndexing'
+        load = lambda x: self.loadData_Debug(x)
+        load.__name__ = 'loadData'
+        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
+        denoise.__name__ = 'denoise'
+        cores = sum(client.ncores().values())
+        log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
+        data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
+        results = data.map(load).map(denoise).map(indexing).compute()
+        log.info('Gathering results')
+        results = client.gather(results)
+        log.info('Removing dask-client')
+        client.shutdown()
+        return results
 
     def run(self, files):
         self.checkAbsoluteLocalFilePaths(files)
@@ -151,8 +171,7 @@ class IndexingDask(Algorithm):
         indexing.__name__ = 'computeIndexing'
         load = lambda x: acalib.io.loadFITS_PrimmaryOnly(x)
         load.__name__ = 'loadData'
-        #denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
-        denoise = lambda x : self.temporalDenoise(x)
+        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
         denoise.__name__ = 'denoise'
         cores = sum(client.ncores().values())
         log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
