@@ -152,7 +152,7 @@ class IndexingDask(Algorithm):
         load = lambda x: acalib.io.loadFITS_PrimmaryOnly(x)
         load.__name__ = 'loadData'
         #denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
-        denoise = lambda x : temporalDenoise(x)
+        denoise = lambda x : self.temporalDenoise(x)
         denoise.__name__ = 'denoise'
         cores = sum(client.ncores().values())
         log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
