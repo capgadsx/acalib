@@ -124,6 +124,7 @@ class IndexingDask(Algorithm):
         gms = GMS(gmsParams)
         spectra, slices = acalib.core.spectra_sketch(data.data, self.config["SAMPLES"], self.config["RANDOM_STATE"])
         result = []
+        print(slices)
         for slice in slices:
             slice_stacked = acalib.core.vel_stacking(data, slice)
             labeled_images = gms.run(slice_stacked)
@@ -133,6 +134,8 @@ class IndexingDask(Algorithm):
                 freq_min = float(data.wcs.all_pix2world(0, 0, slice.start, 1)[2])
                 freq_max = float(data.wcs.all_pix2world(0, 0, slice.stop, 1)[2])
             table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
+            print table
+            print len(table)
             if len(table) > 0:
                 result.append(table)
         return result
