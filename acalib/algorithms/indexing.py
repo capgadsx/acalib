@@ -118,6 +118,7 @@ class IndexingDask(Algorithm):
 
     def computeIndexing(self, data):
         if data is None:
+            log.warn('ComputeIndexing will return None')
             return None
         gmsParams = {'P': self.config['P'], 'PRECISION': self.config['PRECISION']}
         gms = GMS(gmsParams)
@@ -187,8 +188,7 @@ class IndexingDask(Algorithm):
         cores = sum(client.ncores().values())
         log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
         data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
-        data = data.map(load).map(denoise)
-        results = data.map(indexing).compute()
+        results = data.map(load).map(denoise).map(indexing).compute()
         log.info('Gathering results')
         results = client.gather(results)
         log.info('Removing dask-client')
