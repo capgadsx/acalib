@@ -141,7 +141,11 @@ class IndexingDask(Algorithm):
 
     def loadData_Debug(self, x):
         print('WORKING WITH: '+os.path.basename(x))
-        return acalib.io.loadFITS_PrimmaryOnly(x)
+        return (acalib.io.loadFITS_PrimmaryOnly(x), x)
+
+    def denoise_Debug(self, x):
+        print('ON DENOISE: '+os.path.basename(x[1]))
+        return acalib.denoise(x[0], threshold=acalib.noise_level(x[0]))
 
     def runDebug(self, files):
         self.checkAbsoluteLocalFilePaths(files)
@@ -151,7 +155,7 @@ class IndexingDask(Algorithm):
         indexing.__name__ = 'computeIndexing'
         load = lambda x: self.loadData_Debug(x)
         load.__name__ = 'loadData'
-        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
+        denoise = lambda x: self.denoise_Debug(x)
         denoise.__name__ = 'denoise'
         cores = sum(client.ncores().values())
         log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
