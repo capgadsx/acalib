@@ -7,6 +7,7 @@ import os
 import distributed
 import dask.bag as db
 from astropy import log
+import numpy as np
 
 class Indexing(Algorithm):
     """
@@ -116,6 +117,8 @@ class IndexingDask(Algorithm):
             self.config['SCHEDULER_ADDR'] = '127.0.0.1:8786'
 
     def computeIndexing(self, data):
+        if data is None:
+            return None
         gmsParams = {'P': self.config['P'], 'PRECISION': self.config['PRECISION']}
         gms = GMS(gmsParams)
         spectra, slices = acalib.core.spectra_sketch(data.data, self.config["SAMPLES"], self.config["RANDOM_STATE"])
@@ -140,12 +143,16 @@ class IndexingDask(Algorithm):
                 raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
 
     def loadData_Debug(self, x):
-        print('WORKING WITH: '+os.path.basename(x))
-        return (acalib.io.loadFITS_PrimmaryOnly(x), x)
+        cube = acalib.io.loadFITS_PrimmaryOnly(x)
+        if np.isnan(cube.data).any():
+            log.error(os.path.basename(x)+' contains NaN values!!')
+            return None #What we have to do when data is NaN ???
+        return cube
 
     def denoise_Debug(self, x):
-        print('ON DENOISE: '+os.path.basename(x[1]))
-        return acalib.denoise(x[0], threshold=acalib.noise_level(x[0]))
+        if x is None:
+            return None
+        return acalib.denoise(x, threshold=acalib.noise_level(x))
 
     def runDebug(self, files):
         self.checkAbsoluteLocalFilePaths(files)
