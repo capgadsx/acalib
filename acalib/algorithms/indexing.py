@@ -139,7 +139,7 @@ class IndexingDask(Algorithm):
                 log.error('FITS file path should be absolute when running in local-filesystem mode')
                 raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
 
-    def temporalDenoise(x):
+    def temporalDenoise(self, x):
         log.info('DENOISE: '+x)
         return acalib.denoise(x, threshold=acalib.noise_level(x))
 
