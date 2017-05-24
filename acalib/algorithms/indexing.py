@@ -139,6 +139,10 @@ class IndexingDask(Algorithm):
                 log.error('FITS file path should be absolute when running in local-filesystem mode')
                 raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
 
+    def temporalDenoise(x):
+        log.info('DENOISE: '+x)
+        return acalib.denoise(x, threshold=acalib.noise_level(x))
+
     def run(self, files):
         self.checkAbsoluteLocalFilePaths(files)
         log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
@@ -147,7 +151,8 @@ class IndexingDask(Algorithm):
         indexing.__name__ = 'computeIndexing'
         load = lambda x: acalib.io.loadFITS_PrimmaryOnly(x)
         load.__name__ = 'loadData'
-        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
+        #denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
+        denoise = lambda x : temporalDenoise(x)
         denoise.__name__ = 'denoise'
         cores = sum(client.ncores().values())
         log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
