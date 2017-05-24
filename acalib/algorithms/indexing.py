@@ -134,7 +134,7 @@ class IndexingDask(Algorithm):
                 freq_min = float(data.wcs.all_pix2world(0, 0, slice.start, 1)[2])
                 freq_max = float(data.wcs.all_pix2world(0, 0, slice.stop, 1)[2])
             table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
-            print table
+            print(table)
             print len(table)
             if len(table) > 0:
                 result.append(table)
