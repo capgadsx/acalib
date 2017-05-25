@@ -178,23 +178,23 @@ class IndexingDask(Algorithm):
         client.shutdown()
         return results
 
-    def checkNaN(self, x):
+    def checkCube(self, x):
         try:
             cube = acalib.io.loadFITS_PrimmaryOnly(x)
         except IOError:
             log.error('Failed to load: '+os.path.basename(x))
-            return (True, 'IOError')
+            return (True, 'IOError') #Dafuq (?)
         if np.isnan(cube.data).any():
             log.error(os.path.basename(x)+' contains NaN values!!')
             return (True, 'NaN') #What we have to do when data is NaN ???
-        return False
+        return (False, None)
 
     def runChecks(self, files):
         self.checkAbsoluteLocalFilePaths(files)
         log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
         client = distributed.Client(self.config['SCHEDULER_ADDR'])
-        check = lambda x: self.checkNaN(x)
-        check.__name__ = 'checkNaN'
+        check = lambda x: self.checkCube(x)
+        check.__name__ = 'check'
         cores = sum(client.ncores().values())
         log.info('Running Checks on '+str(len(files))+' elements with '+str(cores)+' cores')
         data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
