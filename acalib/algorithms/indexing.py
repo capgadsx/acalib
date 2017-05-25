@@ -179,10 +179,14 @@ class IndexingDask(Algorithm):
         return results
 
     def checkNaN(self, x):
-        cube = acalib.io.loadFITS_PrimmaryOnly(x)
+        try:
+            cube = acalib.io.loadFITS_PrimmaryOnly(x)
+        except IOError:
+            log.error('Failed to load: '+os.path.basename(x))
+            return (True, 'IOError')
         if np.isnan(cube.data).any():
             log.error(os.path.basename(x)+' contains NaN values!!')
-            return True #What we have to do when data is NaN ???
+            return (True, 'NaN') #What we have to do when data is NaN ???
         return False
 
     def runChecks(self, files):
