@@ -149,6 +149,9 @@ class IndexingDask(Algorithm):
         except IOError:
             log.error('Failed to load: '+os.path.basename(x))
             return (True, 'IOError') #Dafuq (?)
+        except MemoryError:
+            log.error('Failed to load: '+os.path.basename(x))
+            return (True, 'MemoryError')
         if np.isnan(cube.data).any():
             log.error(os.path.basename(x)+' contains NaN values!!')
             return (True, 'NaN') #What we have to do when data is NaN ???
