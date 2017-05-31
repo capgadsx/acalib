@@ -199,20 +199,24 @@ def loadFITS_PrimmaryOnly(fitspath):
         if item[0].startswith('PC00'):
             hduobject.header.remove(item[0])
     coordinateSystem = wcs.WCS(hduobject.header)
-    if len(hduobject.data.shape) == 4:
-        log.info('4D Detected: Assuming RA-DEC-FREQ-STOKES, and dropping STOKES')
-        coordinateSystem = coordinateSystem.dropaxis(3)
-        hduobject.data = hduobject.data.sum(axis=0)*bscale+bzero
-        hduobject.data = (hduobject.data*bscale) + bzero
-    elif len(hduobject.data.shape) == 3:
-        log.info('3D Detected: Assuming RA-DEC-FREQ')
-        hduobject.data = (hduobject.data*bscale) + bzero
-    elif len(hduobject.data.shape) == 2:
-        log.info('2D Detected: Assuming RA-DEC')
-        hduobject.data = (hduobject.data*bscale) + bzero
-    else:
-        log.error('Only 2-4D data allowed')
-        raise TypeError('Only 2-4D data allowed')
+    try:
+        if len(hduobject.data.shape) == 4:
+            log.info('4D Detected: Assuming RA-DEC-FREQ-STOKES, and dropping STOKES')
+            coordinateSystem = coordinateSystem.dropaxis(3)
+            hduobject.data = hduobject.data.sum(axis=0)*bscale+bzero
+            hduobject.data = (hduobject.data*bscale) + bzero
+        elif len(hduobject.data.shape) == 3:
+            log.info('3D Detected: Assuming RA-DEC-FREQ')
+            hduobject.data = (hduobject.data*bscale) + bzero
+        elif len(hduobject.data.shape) == 2:
+            log.info('2D Detected: Assuming RA-DEC')
+            hduobject.data = (hduobject.data*bscale) + bzero
+        else:
+            log.error('Only 2-4D data allowed')
+            raise TypeError('Only 2-4D data allowed')
+    except MemoryError:
+        log.error('Failed to load [MemoryError]')
+        raise MemoryError
     hdulist.close()
     return ndd.NDDataRef(hduobject.data, uncertainty=None, mask=mask, wcs=coordinateSystem, meta=hduobject.header, unit=bunit)
 
