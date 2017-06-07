@@ -176,49 +176,16 @@ def load_fits_to_cont(filePath,acont):
         else:
             acont.primary = acont.images[0]
 
-def loadFITS_PrimmaryOnly(fitspath):
-    hdulist = fits.open(fitspath, lazy_load_hdus=True)
+def loadFITS_PrimaryOnly(fitsfile):
+    hdulist = fits.open(fitsfile, lazy_load_hdus=True)
     log.info('Processing PrimaryHDU Object 0')
     hduobject = hdulist[0]
     if hduobject is None:
         log.error('FITS PrimaryHDU is None')
         raise ValueError('FITS PrimaryHDU is None')
-    hduobject.verify("fix")
-    bscale = 1.0
-    bunit = u.Unit('u.Jy/u.beam')
-    bzero = 0.0
-    mask = np.isnan(hduobject.data)
-    if 'BSCALE' in hduobject.header:
-        bscale = hduobject.header['BSCALE']
-    if 'BZERO' in hduobject.header:
-        bzero = hduobject.header['BZERO']
-    if 'BUNIT' in hduobject.header:
-        unit = hduobject.header['BUNIT'].lower().replace('jy','Jy')
-        bunit = u.Unit(unit, format='fits')
-    for item in hduobject.header.items():
-        if item[0].startswith('PC00'):
-            hduobject.header.remove(item[0])
-    coordinateSystem = wcs.WCS(hduobject.header)
-    try:
-        if len(hduobject.data.shape) == 4:
-            log.info('4D Detected: Assuming RA-DEC-FREQ-STOKES, and dropping STOKES')
-            coordinateSystem = coordinateSystem.dropaxis(3)
-            hduobject.data = hduobject.data.sum(axis=0)*bscale+bzero
-            hduobject.data = (hduobject.data*bscale) + bzero
-        elif len(hduobject.data.shape) == 3:
-            log.info('3D Detected: Assuming RA-DEC-FREQ')
-            hduobject.data = (hduobject.data*bscale) + bzero
-        elif len(hduobject.data.shape) == 2:
-            log.info('2D Detected: Assuming RA-DEC')
-            hduobject.data = (hduobject.data*bscale) + bzero
-        else:
-            log.error('Only 2-4D data allowed')
-            raise TypeError('Only 2-4D data allowed')
-    except MemoryError:
-        log.error('Failed to load [MemoryError]')
-        raise MemoryError
+    result = HDU_to_NDData(hduobject)
     hdulist.close()
-    return ndd.NDDataRef(hduobject.data, uncertainty=None, mask=mask, wcs=coordinateSystem, meta=hduobject.header, unit=bunit)
+    return result
 
 
 def SAMP_send_fits(filename,longname):
