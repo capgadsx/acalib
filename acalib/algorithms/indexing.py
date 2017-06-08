@@ -118,6 +118,39 @@ class IndexingDask(object):
             raise ValueError(name+' is not a valid field')
         super(IndexingDask, self).__setattr__(name, value)
 
+    def runSafe(self, files):
+        log.info('Connecting to dask-scheduler at ['+self.scheduler+']')
+        client = distributed.Client(self.scheduler)
+        check = lambda x: self.check(x)
+        check.__name__ = 'check'
+        denoise = lambda x: self.denoiseCube(x)
+        denoise.__name__ = 'denoise'
+        indexing = lambda x: self.runIndexing(x)
+        indexing.__name__ = 'indexing'
+
+    def check(self, fits):
+        if not os.path.isabs(fits):
+            return (False, 'FITS file path is not absolute')
+        try:
+            cube = acalib.io.loadFITS_PrimaryOnly(fits)
+        except IOError:
+            return (False, 'IOError')
+        except MemoryError:
+            return (False, 'MemoryError')
+        if np.isnan(cube.data).any():
+            return (False, 'NaN')
+        return (True, cube)
+
+    def denoiseCube(self, cube_data):
+        if cube_data[0]:
+            return (True, acalib.denoise(cube_data[1], threshold=acalib.noise_level(cube_data[1])))
+        return cube_data
+
+    def runIndexing(self, cube_data):
+        if cube_data[0]:
+            pass
+        return cube_data
+
     def computeIndexing(self, data):
         gmsParams = {'P': self.config['P'], 'PRECISION': self.config['PRECISION']}
         gms = GMS(gmsParams)
@@ -147,7 +180,7 @@ class IndexingDask(object):
 
     def checkCube(self, x):
         try:
-            cube = acalib.io.loadFITS_PrimmaryOnly(x)
+            cube = acalib.io.loadFITS_PrimaryOnly(x)
         except IOError:
             log.error('Failed to load: '+os.path.basename(x))
             return (True, 'IOError') #Dafuq (?)
