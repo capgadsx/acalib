@@ -95,6 +95,103 @@ class Indexing(Algorithm):
             for i,roi in enumerate(c):
                 for j, im in enumerate(roi.segmented_images):
                     c[i].segmented_images[j] = NDData(data=im, wcs = wcs)
-
-
         return c
+
+class IndexingDask(object):
+    valid_fields = ['gms_percentile', 'precision', 'random_state', 'samples', 'partitions', 'partition_size', 'scheduler']
+
+    def __init__(self):
+        self.gms_percentile = 0.05
+        self.precision = 0.02
+        self.random_state = None
+        self.samples = 1000
+        self.partitions = None
+        self.partition_size = None
+        self.scheduler = '127.0.0.1:8786'
+
+    def __getattr__(self, name):
+        if name not in self.valid_fields:
+            raise ValueError(name+' is not a valid field')
+
+    def __setattr__(self, name, value):
+        if name not in self.valid_fields:
+            raise ValueError(name+' is not a valid field')
+        super(IndexingDask, self).__setattr__(name, value)
+
+    def computeIndexing(self, data):
+        gmsParams = {'P': self.config['P'], 'PRECISION': self.config['PRECISION']}
+        gms = GMS(gmsParams)
+        spectra, slices = acalib.core.spectra_sketch(data.data, self.config["SAMPLES"], self.config["RANDOM_STATE"])
+        result = []
+        print(slices)
+        for slice in slices:
+            slice_stacked = acalib.core.vel_stacking(data, slice)
+            labeled_images = gms.run(slice_stacked)
+            freq_min = None
+            freq_max = None
+            if data.wcs:
+                freq_min = float(data.wcs.all_pix2world(0, 0, slice.start, 1)[2])
+                freq_max = float(data.wcs.all_pix2world(0, 0, slice.stop, 1)[2])
+            table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
+            print(table)
+            print(len(table))
+            if len(table) > 0:
+                result.append(table)
+        return result
+
+    def checkAbsoluteLocalFilePaths(self, files):
+        for f in files:
+            if not os.path.isabs(f):
+                log.error('FITS file path should be absolute when running in local-filesystem mode')
+                raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
+
+    def checkCube(self, x):
+        try:
+            cube = acalib.io.loadFITS_PrimmaryOnly(x)
+        except IOError:
+            log.error('Failed to load: '+os.path.basename(x))
+            return (True, 'IOError') #Dafuq (?)
+        except MemoryError:
+            log.error('Failed to load: '+os.path.basename(x))
+            return (True, 'MemoryError')
+        if np.isnan(cube.data).any():
+            log.error(os.path.basename(x)+' contains NaN values!!')
+            return (True, 'NaN') #What we have to do when data is NaN ???
+        return (False, None)
+
+    def runChecks(self, files):
+        self.checkAbsoluteLocalFilePaths(files)
+        log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
+        client = distributed.Client(self.config['SCHEDULER_ADDR'])
+        check = lambda x: self.checkCube(x)
+        check.__name__ = 'check'
+        cores = sum(client.ncores().values())
+        log.info('Running Checks on '+str(len(files))+' elements with '+str(cores)+' cores')
+        data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
+        results = data.map(check).compute()
+        log.info('Gathering results')
+        results = client.gather(results)
+        log.info('Removing dask-client')
+        client.shutdown()
+        return results
+
+
+    def run(self, files):
+        self.checkAbsoluteLocalFilePaths(files)
+        log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
+        client = distributed.Client(self.config['SCHEDULER_ADDR'])
+        indexing = lambda x: self.computeIndexing(x)
+        indexing.__name__ = 'computeIndexing'
+        load = lambda x: acalib.io.loadFITS_PrimmaryOnly(x)
+        load.__name__ = 'loadData'
+        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
+        denoise.__name__ = 'denoise'
+        cores = sum(client.ncores().values())
+        log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
+        data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
+        results = data.map(load).map(denoise).map(indexing).compute()
+        log.info('Gathering results')
+        results = client.gather(results)
+        log.info('Removing dask-client')
+        client.shutdown()
+        return results
