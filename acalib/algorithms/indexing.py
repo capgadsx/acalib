@@ -127,28 +127,62 @@ class IndexingDask(object):
         denoise.__name__ = 'denoise'
         indexing = lambda x: self.runIndexing(x)
         indexing.__name__ = 'indexing'
+        cores_on_cluster = sum(client.ncores().values())
+        log.info('Creating pipeline')
+        pipeline = db.from_sequence(files, self.partition_size, self.partitions)
+        pipeline = pipeline.map(check).map(denoise).map(indexing)
+        log.info('Computing "Indexing_Safe" on '+str(len(files))+' elements with '+str(cores)+' cores')
+        results = pipeline.compute()
+        log.info('Gathering results')
+        results = client.gather(results)
+        log.info('Removing client from scheduler')
+        client.shutdown()
+        return results
 
     def check(self, fits):
+        #Returns cube_data [0] => Operation Result
+        #                  [1] => FITS Name
+        #                  [2] => In case of success: astronomical data cube.
+        #                      => In case of failure: cause.
         if not os.path.isabs(fits):
-            return (False, 'FITS file path is not absolute')
+            return (False, fits, 'FITS file path is not absolute')
         try:
             cube = acalib.io.loadFITS_PrimaryOnly(fits)
         except IOError:
-            return (False, 'IOError')
+            return (False, fits, 'IOError')
         except MemoryError:
-            return (False, 'MemoryError')
+            return (False, fits, 'MemoryError')
         if np.isnan(cube.data).any():
-            return (False, 'NaN')
-        return (True, cube)
+            return (False, fits, 'NaN')
+        return (True, fits, cube)
 
     def denoiseCube(self, cube_data):
         if cube_data[0]:
-            return (True, acalib.denoise(cube_data[1], threshold=acalib.noise_level(cube_data[1])))
+            return (True, cube_data[1], acalib.denoise(cube_data[2], threshold=acalib.noise_level(cube_data[2])))
         return cube_data
 
     def runIndexing(self, cube_data):
+        #Returns cube_data [0] => Operation Result
+        #                  [1] => FITS Name
+        #                  [2] => In case of success: votable with indexing results (theorically).
+        #                      => In case of failure: cause.
         if cube_data[0]:
-            pass
+            gms_params = {'P': self.gms_percentile, 'PRECISION': self.precision}
+            gms = GMS(gms_params)
+            spectra, slices = acalib.core.spectra_sketch(cube_data[2].data, self.samples, self.random_state)
+            result = []
+            for _slice in slices:
+                slice_stacked = acalib.core.vel_stacking(data, _slice)
+                labeled_images = gms.run(slice_stacked)
+                freq_min = None
+                freq_max = None
+                if cube_data[2].wcs:
+                    freq_min = float(cube_data[2].wcs.all_pix2world(0, 0, _slice.start, 1)[2])
+                    freq_min = float(cube_data[2].wcs.all_pix2world(0, 0, _slice.stop, 1)[2])
+                table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
+                if len(table) > 0:
+                    result.append(table)
+            return (True, cube_data[1], result)
         return cube_data
 
     def computeIndexing(self, data):
@@ -202,27 +236,6 @@ class IndexingDask(object):
         log.info('Running Checks on '+str(len(files))+' elements with '+str(cores)+' cores')
         data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
         results = data.map(check).compute()
-        log.info('Gathering results')
-        results = client.gather(results)
-        log.info('Removing dask-client')
-        client.shutdown()
-        return results
-
-
-    def run(self, files):
-        self.checkAbsoluteLocalFilePaths(files)
-        log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
-        client = distributed.Client(self.config['SCHEDULER_ADDR'])
-        indexing = lambda x: self.computeIndexing(x)
-        indexing.__name__ = 'computeIndexing'
-        load = lambda x: acalib.io.loadFITS_PrimmaryOnly(x)
-        load.__name__ = 'loadData'
-        denoise = lambda x: acalib.denoise(x, threshold=acalib.noise_level(x))
-        denoise.__name__ = 'denoise'
-        cores = sum(client.ncores().values())
-        log.info('Computing "Indexing" on '+str(len(files))+' elements with '+str(cores)+' cores')
-        data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
-        results = data.map(load).map(denoise).map(indexing).compute()
         log.info('Gathering results')
         results = client.gather(results)
         log.info('Removing dask-client')
