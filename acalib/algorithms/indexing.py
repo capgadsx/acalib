@@ -119,9 +119,14 @@ class IndexingDask(object):
         super(IndexingDask, self).__setattr__(name, value)
 
     def runSafe(self, files):
+        #Returns results => list with cube_data elements
+        #                           [0] => Operation Result
+        #                           [1] => FITS Name
+        #                           [2] => In case of success: votable with indexing results (theorically).
+        #                               => In case of failure: cause.
         log.info('Connecting to dask-scheduler at ['+self.scheduler+']')
         client = distributed.Client(self.scheduler)
-        check = lambda x: self.check(x)
+        check = lambda x: self.check(x, False)
         check.__name__ = 'check'
         denoise = lambda x: self.denoiseCube(x)
         denoise.__name__ = 'denoise'
@@ -131,7 +136,7 @@ class IndexingDask(object):
         log.info('Creating pipeline')
         pipeline = db.from_sequence(files, self.partition_size, self.partitions)
         pipeline = pipeline.map(check).map(denoise).map(indexing)
-        log.info('Computing "Indexing_Safe" on '+str(len(files))+' elements with '+str(cores)+' cores')
+        log.info('Computing "Indexing_Safe" on '+str(len(files))+' elements with '+str(cores_on_cluster)+' cores')
         results = pipeline.compute()
         log.info('Gathering results')
         results = client.gather(results)
@@ -139,7 +144,29 @@ class IndexingDask(object):
         client.shutdown()
         return results
 
-    def check(self, fits):
+    def runCheck(self, files):
+        #Returns results => list with cube_data elements
+        #                           [0] => Operation Result
+        #                           [1] => FITS Name
+        #                           [2] => In case of success: None.
+        #                               => In case of failure: cause.
+        log.info('Connecting to dask-scheduler at ['+self.scheduler+']')
+        client = distributed.Client(self.scheduler)
+        check = lambda x: self.check(x, True)
+        check.__name__ = 'check'
+        cores_on_cluster = sum(client.ncores().values())
+        log.info('Creating pipeline')
+        pipeline = db.from_sequence(files, self.partition_size, self.partitions)
+        pipeline = pipeline.map(check)
+        log.info('Computing "Indexing_Check" on '+str(len(files))+' elements with '+str(cores_on_cluster)+' cores')
+        results = pipeline.compute()
+        log.info('Gathering results')
+        results = client.gather(results)
+        log.info('Removing client from scheduler')
+        client.shutdown()
+        return results
+
+    def check(self, fits, checkOnly):
         #Returns cube_data [0] => Operation Result
         #                  [1] => FITS Name
         #                  [2] => In case of success: astronomical data cube.
@@ -154,9 +181,15 @@ class IndexingDask(object):
             return (False, fits, 'MemoryError')
         if np.isnan(cube.data).any():
             return (False, fits, 'NaN')
+        if checkOnly:
+            return (True, fits, None)
         return (True, fits, cube)
 
     def denoiseCube(self, cube_data):
+        #Returns cube_data [0] => Operation Result
+        #                  [1] => FITS Name
+        #                  [2] => In case of success: denoised astronomical data cube.
+        #                      => In case of failure: cause.
         if cube_data[0]:
             return (True, cube_data[1], acalib.denoise(cube_data[2], threshold=acalib.noise_level(cube_data[2])))
         return cube_data
@@ -184,19 +217,3 @@ class IndexingDask(object):
                     result.append(table)
             return (True, cube_data[1], result)
         return cube_data
-
-    def runChecks(self, files):
-        self.checkAbsoluteLocalFilePaths(files)
-        log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
-        client = distributed.Client(self.config['SCHEDULER_ADDR'])
-        check = lambda x: self.checkCube(x)
-        check.__name__ = 'check'
-        cores = sum(client.ncores().values())
-        log.info('Running Checks on '+str(len(files))+' elements with '+str(cores)+' cores')
-        data = db.from_sequence(files, self.config['PARTITION_SIZE'], self.config['N_PARTITIONS'])
-        results = data.map(check).compute()
-        log.info('Gathering results')
-        results = client.gather(results)
-        log.info('Removing dask-client')
-        client.shutdown()
-        return results
