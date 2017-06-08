@@ -185,47 +185,6 @@ class IndexingDask(object):
             return (True, cube_data[1], result)
         return cube_data
 
-    def computeIndexing(self, data):
-        gmsParams = {'P': self.config['P'], 'PRECISION': self.config['PRECISION']}
-        gms = GMS(gmsParams)
-        spectra, slices = acalib.core.spectra_sketch(data.data, self.config["SAMPLES"], self.config["RANDOM_STATE"])
-        result = []
-        print(slices)
-        for slice in slices:
-            slice_stacked = acalib.core.vel_stacking(data, slice)
-            labeled_images = gms.run(slice_stacked)
-            freq_min = None
-            freq_max = None
-            if data.wcs:
-                freq_min = float(data.wcs.all_pix2world(0, 0, slice.start, 1)[2])
-                freq_max = float(data.wcs.all_pix2world(0, 0, slice.stop, 1)[2])
-            table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
-            print(table)
-            print(len(table))
-            if len(table) > 0:
-                result.append(table)
-        return result
-
-    def checkAbsoluteLocalFilePaths(self, files):
-        for f in files:
-            if not os.path.isabs(f):
-                log.error('FITS file path should be absolute when running in local-filesystem mode')
-                raise ValueError('FITS file path should be absolute when running in local-filesystem mode')
-
-    def checkCube(self, x):
-        try:
-            cube = acalib.io.loadFITS_PrimaryOnly(x)
-        except IOError:
-            log.error('Failed to load: '+os.path.basename(x))
-            return (True, 'IOError') #Dafuq (?)
-        except MemoryError:
-            log.error('Failed to load: '+os.path.basename(x))
-            return (True, 'MemoryError')
-        if np.isnan(cube.data).any():
-            log.error(os.path.basename(x)+' contains NaN values!!')
-            return (True, 'NaN') #What we have to do when data is NaN ???
-        return (False, None)
-
     def runChecks(self, files):
         self.checkAbsoluteLocalFilePaths(files)
         log.info('Connecting to dask-scheduler at ['+self.config['SCHEDULER_ADDR']+']')
