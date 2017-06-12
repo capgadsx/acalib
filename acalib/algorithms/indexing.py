@@ -3,7 +3,11 @@ from .algorithm import Algorithm
 from .gms import GMS
 from astropy.nddata import support_nddata, NDDataRef, NDData
 from collections import namedtuple
-
+import os
+import distributed
+import dask.bag as db
+from astropy import log
+import numpy as np
 
 class Indexing(Algorithm):
     """
@@ -110,6 +114,8 @@ class IndexingDask(object):
         self.scheduler = '127.0.0.1:8786'
 
     def __getattr__(self, name):
+        if name.startswith('__') and name.endswith('__'):
+            return super(IndexingDask, self).__getattr__(name)
         if name not in self.valid_fields:
             raise ValueError(name+' is not a valid field')
 
