@@ -1,13 +1,16 @@
-import acalib
-from .algorithm import Algorithm
-from .gms import GMS
-from astropy.nddata import support_nddata, NDDataRef, NDData
-from collections import namedtuple
 import os
+import dask
+import numpy
+import acalib
 import distributed
-import dask.bag as db
-from astropy import log
-import numpy as np
+from .gms import GMS
+from .algorithm import Algorithm
+from astropy.nddata import NDDataRef, NDData
+from skimage.filters import threshold_local
+from skimage.measure import label,regionprops
+from skimage.morphology import binary_opening, disk
+from skimage.segmentation import clear_border
+from acalib.core.analysis import _kernelsmooth, _kernel_shift
 
 class Indexing(Algorithm):
     """
@@ -102,124 +105,290 @@ class Indexing(Algorithm):
         return c
 
 class IndexingDask(object):
-    valid_fields = ['gms_percentile', 'precision', 'random_state', 'samples', 'partitions', 'partition_size', 'scheduler']
+    __valid_fields = ['gms_percentile', 'precision', 'random_state', 'samples', 'scheduler']
 
     def __init__(self):
         self.gms_percentile = 0.05
-        self.precision = 0.02
+        self.precision = 0.02 
         self.random_state = None
         self.samples = 1000
-        self.partitions = None
-        self.partition_size = None
         self.scheduler = '127.0.0.1:8786'
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
             return super(IndexingDask, self).__getattr__(name)
-        if name not in self.valid_fields:
+        if name not in self.__valid_fields:
             raise ValueError(name+' is not a valid field')
 
     def __setattr__(self, name, value):
-        if name not in self.valid_fields:
+        if name not in self.__valid_fields:
             raise ValueError(name+' is not a valid field')
         super(IndexingDask, self).__setattr__(name, value)
-
-    def runSafe(self, files):
-        #Returns results => list with cube_data elements
-        #                           [0] => Operation Result
-        #                           [1] => FITS Name
-        #                           [2] => In case of success: votable with indexing results (theorically).
-        #                               => In case of failure: cause.
-        log.info('Connecting to dask-scheduler at ['+self.scheduler+']')
+    
+    def run(self, files):
         client = distributed.Client(self.scheduler)
-        check = lambda x: self.check(x, False)
-        check.__name__ = 'check'
-        denoise = lambda x: self.denoiseCube(x)
-        denoise.__name__ = 'denoise'
-        indexing = lambda x: self.runIndexing(x)
-        indexing.__name__ = 'indexing'
-        cores_on_cluster = sum(client.ncores().values())
-        log.info('Creating pipeline')
-        pipeline = db.from_sequence(files, self.partition_size, self.partitions)
-        pipeline = pipeline.map(check).map(denoise).map(indexing)
-        log.info('Computing "Indexing_Safe" on '+str(len(files))+' elements with '+str(cores_on_cluster)+' cores')
-        results = pipeline.compute()
-        log.info('Gathering results')
-        results = client.gather(results)
-        log.info('Removing client from scheduler')
-        client.shutdown()
-        return results
+        indexing_pipeline = self.__create_pipeline(files)
+        results = client.compute(indexing_pipeline)
+        for future in distributed.as_completed(results):
+            print('Compute finished for '+future.result()[1])
+        pass
 
-    def runCheck(self, files):
-        #Returns results => list with cube_data elements
-        #                           [0] => Operation Result
-        #                           [1] => FITS Name
-        #                           [2] => In case of success: None.
-        #                               => In case of failure: cause.
-        log.info('Connecting to dask-scheduler at ['+self.scheduler+']')
-        client = distributed.Client(self.scheduler)
-        check = lambda x: self.check(x, True)
-        check.__name__ = 'check'
-        cores_on_cluster = sum(client.ncores().values())
-        log.info('Creating pipeline')
-        pipeline = db.from_sequence(files, self.partition_size, self.partitions)
-        pipeline = pipeline.map(check)
-        log.info('Computing "Indexing_Check" on '+str(len(files))+' elements with '+str(cores_on_cluster)+' cores')
-        results = pipeline.compute()
-        log.info('Gathering results')
-        results = client.gather(results)
-        log.info('Removing client from scheduler')
-        client.shutdown()
-        return results
-
-    def check(self, fits, checkOnly):
-        #Returns cube_data [0] => Operation Result
-        #                  [1] => FITS Name
-        #                  [2] => In case of success: astronomical data cube.
-        #                      => In case of failure: cause.
-        if not os.path.isabs(fits):
-            return (False, fits, 'FITS file path is not absolute')
+    def __create_pipeline(self, files):
+        load = lambda x : self.__indexing_load(x)
+        load.__name__ = 'load-fits'
+        denoise = lambda x: self.__indexing_denoise(x)
+        denoise.__name__ = 'denoise-cube'
+        get_slices = lambda x: self.__indexing_spectra(x)
+        get_slices.__name__ = 'slice-cube'
+        vel_stacking = lambda x: self.__gms_vel_stacking(x[0], x[1])
+        vel_stacking.__name__ = 'vel-stacking'
+        get_w_gms = lambda x: self.__gms_optimal_w(x)
+        get_w_gms.__name__ = 'gms-optimal-w'
+        gms = lambda x: self.__gms(x[0], x[1])
+        gms.__name__ = 'gms'
+        measure_shape = lambda x: self.__indexing_measure_shape(x[0], x[1], x[2], x[3])
+        measure_shape.__name__ = 'measure-shape'
+        items_denoised_cubes = []
+        for i in files:
+            item = dask.delayed(load)(i)
+            item = dask.delayed(denoise)(item)
+            items_denoised_cubes.append(item)
+        items_cube_slices = []
+        for i in items_denoised_cubes:
+            item = dask.delayed(get_slices)(i)
+            items_cube_slices.append(item)
+        items_velocity_stacked_cubes = []
+        for index, item_cube_sliced in enumerate(items_cube_slices):
+            item = dask.delayed(vel_stacking)((items_denoised_cubes[index], item_cube_sliced))
+            items_velocity_stacked_cubes.append(item)
+        items_w_values_for_gms = []
+        for i in items_velocity_stacked_cubes:
+            item = dask.delayed(get_w_gms)(i)
+            items_w_values_for_gms.append(item)
+        items_gms_results = []
+        for index, item_stacked_cube in enumerate(items_velocity_stacked_cubes):
+            item = dask.delayed(gms)((item_stacked_cube, items_w_values_for_gms[index]))
+            items_gms_results.append(item)            
+        items_indexing_results = []
+        for index, item_gms_result in enumerate(items_gms_results):
+            item = dask.delayed(measure_shape)((items_denoised_cubes[index],
+                                                items_velocity_stacked_cubes[index],
+                                                items_cube_slices[index],
+                                                item_gms_result))
+            items_indexing_results.append(item)
+        return items_indexing_results
+    
+    def __indexing_load(self, x):
+        if not os.path.isabs(x):
+            return [False, x, 'FITS file path is not absolute']
         try:
-            cube = acalib.io.loadFITS_PrimaryOnly(fits)
+            cube = acalib.io.loadFITS_PrimaryOnly(x)
         except IOError:
-            return (False, fits, 'IOError')
+            return [False, x, 'IOError']
         except MemoryError:
-            return (False, fits, 'MemoryError')
-        if np.isnan(cube.data).any():
-            return (False, fits, 'NaN')
-        if checkOnly:
-            return (True, fits, None)
-        return (True, fits, cube)
+            return [False, x, 'MemoryError']
+        return [True, x, cube]
 
-    def denoiseCube(self, cube_data):
-        #Returns cube_data [0] => Operation Result
-        #                  [1] => FITS Name
-        #                  [2] => In case of success: denoised astronomical data cube.
-        #                      => In case of failure: cause.
-        if cube_data[0]:
-            return (True, cube_data[1], acalib.denoise(cube_data[2], threshold=acalib.noise_level(cube_data[2])))
-        return cube_data
+    def __indexing_denoise(self, item):
+        if item[0]:
+            noise_level = acalib.noise_level(item[2])
+            return [True, item[1], acalib.denoise(item[2], threshold=noise_level)]
+        return item
 
-    def runIndexing(self, cube_data):
-        #Returns cube_data [0] => Operation Result
-        #                  [1] => FITS Name
-        #                  [2] => In case of success: votable with indexing results (theorically).
-        #                      => In case of failure: cause.
-        if cube_data[0]:
-            gms_params = {'P': self.gms_percentile, 'PRECISION': self.precision}
-            gms = GMS(gms_params)
-            spectra, slices = acalib.core.spectra_sketch(cube_data[2].data, self.samples, self.random_state)
-            result = []
-            for _slice in slices:
-                slice_stacked = acalib.core.vel_stacking(data, _slice)
-                labeled_images = gms.run(slice_stacked)
+    def __indexing_spectra(self, item):
+        if item[0]:
+            slices = acalib.core.spectra_sketch(item[2].data, self.samples, self.random_state)[1]
+            if len(slices) > 0:
+                return [True, item[1], slices]
+            else:
+                return [False, item[1], 'spectra_sketch returned empty slices']
+        return item
+
+    def __gms_vel_stacking(self, item_cube, item_slice):
+        if item_slice[0]:
+            vel_stacking = lambda x: self.__gms_vel_stacking_delayed(x[0], x[1])
+            vel_stacking.__name__ = 'vel-stacking-acalib'
+            velocity_stacked_cubes = []
+            for slice in item_slice[2]:
+                velocity_stacked_cube = dask.delayed(vel_stacking)((item_cube[2], slice))
+                velocity_stacked_cubes.append(velocity_stacked_cube)
+            with distributed.worker_client() as client:
+                velocity_stacked_cubes = client.compute(velocity_stacked_cubes)
+                velocity_stacked_cubes = client.gather(velocity_stacked_cubes)
+            return [True, item_cube[1], velocity_stacked_cubes]
+        return item_slice
+
+    def __gms_vel_stacking_delayed(self, cube, slice):
+        cube = acalib.core.vel_stacking(cube.data, slice)
+        cube[numpy.isnan(cube)] = 0
+        return cube
+
+    def __gms_optimal_w(self, item_with_stacked_images):
+        if item_with_stacked_images[0]:
+            w_delayed = lambda x : self.__gms_optimal_w_compute(x[0], x[1])
+            w_delayed.__name__ = 'compute-optimal-w'
+            optimal_w_results = []
+            for stacked_image in item_with_stacked_images[2]:
+                x = dask.delayed(w_delayed)((stacked_image, self.gms_percentile)) #TODO: Change precision to gms_percentile
+                optimal_w_results.append(x)
+            with distributed.worker_client() as client:
+                optimal_w_results = client.compute(optimal_w_results)
+                optimal_w_results = client.gather(optimal_w_results)
+            return [True, item_with_stacked_images[1], optimal_w_results]
+        return item_with_stacked_images
+
+    def __gms_optimal_w_compute(self, image, p):
+        radiusMin = 5
+        radiusMax = 40
+        inc = 1
+        image = (image - numpy.min(image)) / (numpy.max(image) - numpy.min(image))
+        dims = image.shape
+        rows = dims[0]
+        cols = dims[1]
+        maxsize = numpy.max([rows, cols])
+        imagesize = cols * rows
+        radius_thresh = numpy.round(numpy.min([rows, cols]) / 4.)
+        unit = numpy.round(maxsize / 100.)
+        radiusMin = radiusMin * unit
+        radiusMax = radiusMax * unit
+        radiusMax = int(numpy.min([radiusMax, radius_thresh]))
+        radius = radiusMin
+        inc = inc * unit
+        bg = numpy.percentile(image, p * 100)
+        fg = numpy.percentile(image, (1 - p) * 100)
+        min_ov = imagesize
+        overalls = []
+        threshold = lambda x: self.__gms_optimal_w_threshold(x[0], x[1], x[2], x[3])
+        threshold.__name__ = 'max-w-threshold'
+        get_radius = lambda x: self.__gms_optimal_w_get_min_overall(x[0], x[1], x[2])
+        get_radius.__name__ = 'find-minimal-w'
+        while radius <= radiusMax:
+            x = dask.delayed(threshold)((image, radius, bg, fg))
+            overalls.append(x)
+            radius += inc
+        radius_with_min_overall = dask.delayed(get_radius)((overalls, min_ov, radius))
+        with distributed.worker_client() as client:
+            radius_with_min_overall = client.compute(radius_with_min_overall)
+            radius_with_min_overall = client.gather(radius_with_min_overall)
+        return radius_with_min_overall
+
+    def __gms_optimal_w_threshold(self, image, radius, bg, fg):
+        tt = int(radius ** 2)
+        if tt % 2 == 0:
+            tt += 1
+        threshold_val = threshold_local(image, tt, method='mean', offset=0)
+        g = image > threshold_val
+        overall = self.__gms_optimal_w_bg_fg(image, g, bg, fg)
+        return (overall, radius)
+
+    def __gms_optimal_w_bg_fg(self, f, g, bg, fg):
+        dims = f.shape
+        rows = dims[0]
+        cols = dims[1]
+        fp_result = 0
+        fn_result = 0
+        for row in range(rows):
+            for col in range(cols):
+                if g[row][col] == True:
+                    if (numpy.abs(f[row][col] - bg) < numpy.abs(f[row][col] - fg)):
+                        fp_result += 1
+                if g[row][col] == False:
+                    if (numpy.abs(f[row][col] - bg) > numpy.abs(f[row][col] - fg)):
+                        fn_result += 1
+        overall = fp_result + fn_result
+        return overall
+
+    def __gms_optimal_w_get_min_overall(self, overalls, minimum, radius):
+        for overall in overalls:
+            if overall[0] < minimum:
+                minimum = overall[0]
+                radius = overall[1]
+        return radius
+
+    def __gms(self, item_stacked_images, item_w):
+        if item_stacked_images[0]:
+            w_max = item_w[2][0]
+            gms_results = []
+            compute_gms = lambda x: self.__gms_compute(x[0], x[1])
+            compute_gms.__name__ = 'compute-gms'
+            for image in item_stacked_images[2]:
+                x = dask.delayed(compute_gms)((image, w_max))
+                gms_results.append(x)
+            with distributed.worker_client() as client:
+                gms_results = client.compute(gms_results)
+                gms_results = client.gather(gms_results)
+            return [True, item_stacked_images[1], gms_results]
+        return item_stacked_images
+
+    #TODO: Test with numba jit(?)
+    def __gms_compute(self, image, w_max):
+        if len(image.shape) > 2:
+            raise ValueError('Only 2D data cubes supported')
+        dims = image.shape
+        rows = dims[0]
+        cols = dims[1]
+        size = numpy.min([rows, cols])
+        precision = size * self.precision
+        image = image.astype('float64')
+        diff = (image - numpy.min(image)) / (numpy.max(image) - numpy.min(image))
+        tt = w_max ** 2
+        if tt % 2 == 0:
+            tt += 1
+        threshold_val = threshold_local(diff, int(tt), method='mean', offset=0)
+        g = diff > threshold_val
+        r = w_max / 2
+        rMin = 2 * numpy.round(self.precision)
+        image_list = []
+        while r > rMin:
+            background = numpy.zeros((rows, cols))
+            selem = disk(r)
+            sub = binary_opening(g, selem)
+            sub = clear_border(sub)
+            sub = label(sub)
+            fts = regionprops(sub)
+            image_list.append(sub)
+            if len(fts) > 0:
+                for props in fts:
+                    C_x, C_y = props.centroid
+                    radius = int(props.equivalent_diameter / 2.)
+                    kern = 0.01 * numpy.ones((2 * radius, 2 * radius))
+                    krn = _kernelsmooth(x=numpy.ones((2 * radius, 2 * radius)), kern=kern)
+                    krn = numpy.exp(numpy.exp(krn))
+                    if numpy.max(krn) > 0:
+                        krn = (krn - numpy.min(krn)) / (numpy.max(krn) - numpy.min(krn))
+                        background = _kernel_shift(background, krn, C_x, C_y)
+            if numpy.max(background) > 0:
+                background = (background - numpy.min(background)) / (numpy.max(background) - numpy.min(background))
+                diff = diff - background
+            diff = (diff - numpy.min(diff)) / (numpy.max(diff) - numpy.min(diff))
+            tt = int(r * r)
+            if tt % 2 == 0:
+                tt += 1
+            adaptive_threshold = threshold_local(diff, tt, offset=0, method='mean')
+            g = diff > adaptive_threshold
+            r = numpy.round(r / 2.)
+        return image_list
+
+    def __indexing_measure_shape(self, item_cube, item_stacked, item_slices, item_labeled_images):
+        if item_labeled_images[0]:
+            cube = item_cube[2]
+            vel_stacked_images = item_stacked[2]
+            slices = item_slices[2]
+            labeled_images = item_labeled_images[2]
+            assert len(vel_stacked_images) == len(slices) == len(labeled_images)
+            tables_results = []
+            get_table = lambda x: acalib.core.measure_shape(x[0], x[1], x[2], x[3])
+            get_table.__name__ = 'compute-measure-shape'
+            for i, vel_stacked_image in enumerate(vel_stacked_images):
                 freq_min = None
                 freq_max = None
-                if cube_data[2].wcs:
-                    freq_min = float(cube_data[2].wcs.all_pix2world(0, 0, _slice.start, 1)[2])
-                    freq_min = float(cube_data[2].wcs.all_pix2world(0, 0, _slice.stop, 1)[2])
-                table = acalib.core.measure_shape(slice_stacked, labeled_images, freq_min, freq_max)
-                if len(table) > 0:
-                    result.append(table)
-            return (True, cube_data[1], result)
-        return cube_data
+                if cube.wcs:
+                    freq_min = float(cube.wcs.all_pix2world(0, 0, slices[i].start, 1)[2])
+                    freq_max = float(cube.wcs.all_pix2world(0, 0, slices[i].stop, 1)[2])
+                table = dask.delayed(get_table)((vel_stacked_image, labeled_images[i], freq_min, freq_max))
+                tables_results.append(table)
+            with distributed.worker_client() as client:
+                tables_results = client.compute(tables_results)
+                tables_results = client.gather(tables_results)
+            return [True, item_cube[1], tables_results]
+        return item_labeled_images
