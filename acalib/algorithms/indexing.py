@@ -108,6 +108,8 @@ class IndexingDask(object):
     __valid_fields = ['gms_percentile', 'precision', 'random_state', 'samples', 'scheduler']
 
     def __init__(self):
+        #TODO: Pass parameters to use when re-launching tasks that failed
+        #TODO: Maybe reimplement the errors mesages to number-based and make a function that parse the number
         self.gms_percentile = 0.05
         self.precision = 0.02 
         self.random_state = None
@@ -134,19 +136,19 @@ class IndexingDask(object):
         pass
 
     def __create_pipeline(self, files):
-        load = lambda x : self.__indexing_load(x)
+        load = lambda fits: self.__indexing_load(fits)
         load.__name__ = 'load-fits'
-        denoise = lambda x: self.__indexing_denoise(x)
+        denoise = lambda cube: self.__indexing_denoise(cube)
         denoise.__name__ = 'denoise-cube'
-        get_slices = lambda x: self.__indexing_spectra(x)
+        get_slices = lambda cube: self.__indexing_spectra(cube)
         get_slices.__name__ = 'slice-cube'
-        vel_stacking = lambda x: self.__gms_vel_stacking(x[0], x[1])
+        vel_stacking = lambda cube, slice: self.__gms_vel_stacking(cube, slice)
         vel_stacking.__name__ = 'vel-stacking'
-        get_w_gms = lambda x: self.__gms_optimal_w(x)
+        get_w_gms = lambda stacked_images: self.__gms_optimal_w(stacked_images)
         get_w_gms.__name__ = 'gms-optimal-w'
-        gms = lambda x: self.__gms(x[0], x[1])
+        gms = lambda stacked_image, w_value: self.__gms(stacked_image, w_value)
         gms.__name__ = 'gms'
-        measure_shape = lambda x: self.__indexing_measure_shape(x[0], x[1], x[2], x[3])
+        measure_shape = lambda cube, stacked_images, slices, labeled_images: self.__indexing_measure_shape(cube, stacked_images, slices, labeled_images)
         measure_shape.__name__ = 'measure-shape'
         items_denoised_cubes = []
         for i in files:
@@ -159,7 +161,7 @@ class IndexingDask(object):
             items_cube_slices.append(item)
         items_velocity_stacked_cubes = []
         for index, item_cube_sliced in enumerate(items_cube_slices):
-            item = dask.delayed(vel_stacking)((items_denoised_cubes[index], item_cube_sliced))
+            item = dask.delayed(vel_stacking)(items_denoised_cubes[index], item_cube_sliced)
             items_velocity_stacked_cubes.append(item)
         items_w_values_for_gms = []
         for i in items_velocity_stacked_cubes:
@@ -167,14 +169,14 @@ class IndexingDask(object):
             items_w_values_for_gms.append(item)
         items_gms_results = []
         for index, item_stacked_cube in enumerate(items_velocity_stacked_cubes):
-            item = dask.delayed(gms)((item_stacked_cube, items_w_values_for_gms[index]))
-            items_gms_results.append(item)            
+            item = dask.delayed(gms)(item_stacked_cube, items_w_values_for_gms[index])
+            items_gms_results.append(item)
         items_indexing_results = []
         for index, item_gms_result in enumerate(items_gms_results):
-            item = dask.delayed(measure_shape)((items_denoised_cubes[index],
+            item = dask.delayed(measure_shape)(items_denoised_cubes[index],
                                                 items_velocity_stacked_cubes[index],
                                                 items_cube_slices[index],
-                                                item_gms_result))
+                                                item_gms_result)
             items_indexing_results.append(item)
         return items_indexing_results
     
@@ -206,11 +208,11 @@ class IndexingDask(object):
 
     def __gms_vel_stacking(self, item_cube, item_slice):
         if item_slice[0]:
-            vel_stacking = lambda x: self.__gms_vel_stacking_delayed(x[0], x[1])
+            vel_stacking = lambda cube, slice: self.__gms_vel_stacking_delayed(cube, slice)
             vel_stacking.__name__ = 'vel-stacking-acalib'
             velocity_stacked_cubes = []
             for slice in item_slice[2]:
-                velocity_stacked_cube = dask.delayed(vel_stacking)((item_cube[2], slice))
+                velocity_stacked_cube = dask.delayed(vel_stacking)(item_cube[2], slice)
                 velocity_stacked_cubes.append(velocity_stacked_cube)
             with distributed.worker_client() as client:
                 velocity_stacked_cubes = client.compute(velocity_stacked_cubes)
@@ -225,11 +227,11 @@ class IndexingDask(object):
 
     def __gms_optimal_w(self, item_with_stacked_images):
         if item_with_stacked_images[0]:
-            w_delayed = lambda x : self.__gms_optimal_w_compute(x[0], x[1])
+            w_delayed = lambda image, p_value: self.__gms_optimal_w_compute(image, p_value)
             w_delayed.__name__ = 'compute-optimal-w'
             optimal_w_results = []
             for stacked_image in item_with_stacked_images[2]:
-                x = dask.delayed(w_delayed)((stacked_image, self.gms_percentile)) #TODO: Change precision to gms_percentile
+                x = dask.delayed(w_delayed)(stacked_image, self.gms_percentile)
                 optimal_w_results.append(x)
             with distributed.worker_client() as client:
                 optimal_w_results = client.compute(optimal_w_results)
@@ -258,15 +260,15 @@ class IndexingDask(object):
         fg = numpy.percentile(image, (1 - p) * 100)
         min_ov = imagesize
         overalls = []
-        threshold = lambda x: self.__gms_optimal_w_threshold(x[0], x[1], x[2], x[3])
+        threshold = lambda image, radius, bg, fg: self.__gms_optimal_w_threshold(image, radius, bg, fg)
         threshold.__name__ = 'max-w-threshold'
-        get_radius = lambda x: self.__gms_optimal_w_get_min_overall(x[0], x[1], x[2])
+        get_radius = lambda overalls, minimum, radius: self.__gms_optimal_w_get_min_overall(overalls, minimum, radius)
         get_radius.__name__ = 'find-minimal-w'
         while radius <= radiusMax:
-            x = dask.delayed(threshold)((image, radius, bg, fg))
+            x = dask.delayed(threshold)(image, radius, bg, fg)
             overalls.append(x)
             radius += inc
-        radius_with_min_overall = dask.delayed(get_radius)((overalls, min_ov, radius))
+        radius_with_min_overall = dask.delayed(get_radius)(overalls, min_ov, radius)
         with distributed.worker_client() as client:
             radius_with_min_overall = client.compute(radius_with_min_overall)
             radius_with_min_overall = client.gather(radius_with_min_overall)
@@ -309,10 +311,10 @@ class IndexingDask(object):
         if item_stacked_images[0]:
             w_max = item_w[2][0]
             gms_results = []
-            compute_gms = lambda x: self.__gms_compute(x[0], x[1])
+            compute_gms = lambda image, w_value: self.__gms_compute(image, w_value)
             compute_gms.__name__ = 'compute-gms'
             for image in item_stacked_images[2]:
-                x = dask.delayed(compute_gms)((image, w_max))
+                x = dask.delayed(compute_gms)(image, w_max)
                 gms_results.append(x)
             with distributed.worker_client() as client:
                 gms_results = client.compute(gms_results)
@@ -320,7 +322,7 @@ class IndexingDask(object):
             return [True, item_stacked_images[1], gms_results]
         return item_stacked_images
 
-    #TODO: Test with numba jit(?)
+    #TODO: Maybe we should test this function with numba jit for better performance
     def __gms_compute(self, image, w_max):
         if len(image.shape) > 2:
             raise ValueError('Only 2D data cubes supported')
@@ -377,7 +379,7 @@ class IndexingDask(object):
             labeled_images = item_labeled_images[2]
             assert len(vel_stacked_images) == len(slices) == len(labeled_images)
             tables_results = []
-            get_table = lambda x: acalib.core.measure_shape(x[0], x[1], x[2], x[3])
+            get_table = lambda stacked_image, labeled_images, freq_min, freq_max: acalib.core.measure_shape(stacked_image, labeled_images, freq_min, freq_max)
             get_table.__name__ = 'compute-measure-shape'
             for i, vel_stacked_image in enumerate(vel_stacked_images):
                 freq_min = None
@@ -385,7 +387,7 @@ class IndexingDask(object):
                 if cube.wcs:
                     freq_min = float(cube.wcs.all_pix2world(0, 0, slices[i].start, 1)[2])
                     freq_max = float(cube.wcs.all_pix2world(0, 0, slices[i].stop, 1)[2])
-                table = dask.delayed(get_table)((vel_stacked_image, labeled_images[i], freq_min, freq_max))
+                table = dask.delayed(get_table)(vel_stacked_image, labeled_images[i], freq_min, freq_max)
                 tables_results.append(table)
             with distributed.worker_client() as client:
                 tables_results = client.compute(tables_results)
