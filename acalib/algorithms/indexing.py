@@ -109,7 +109,6 @@ class IndexingDask(object):
 
     def __init__(self):
         #TODO: Pass parameters to use when re-launching tasks that failed
-        #TODO: Maybe reimplement the errors mesages to number-based and make a function that parse the number
         self.gms_percentile = 0.05
         self.precision = 0.02 
         self.random_state = None
@@ -132,8 +131,23 @@ class IndexingDask(object):
         indexing_pipeline = self.__create_pipeline(files)
         results = client.compute(indexing_pipeline)
         for future in distributed.as_completed(results):
-            print('Compute finished for '+future.result()[1])
+            operation_result, object_name, indexing_output = future.result()
+            object_name = os.path.basename(object_name)
+            print('Compute finished for '+object_name+'. ['+self.__compute_result_to_string(operation_result, indexing_output)+']')
         pass
+
+    def __compute_result_to_string(self, operation_result, result_code):
+        if not operation_result:
+            if result_code == 1:
+                return 'ValueError: The FITS file path is not an absolute path'
+            elif result_code == 2:
+                return 'IOError: Malformed or corrupted FITS file'
+            elif result_code == 3:
+                return 'MemoryError: The Primary HDU of the FITS file does not fit in memory'
+            elif result_code == 4:
+                return 'RuntimeError: With the given parameters, the algorithm returned empty slices for this FITS'
+        else:
+            return 'Success'
 
     def __create_pipeline(self, files):
         load = lambda fits: self.__indexing_load(fits)
@@ -182,13 +196,13 @@ class IndexingDask(object):
     
     def __indexing_load(self, x):
         if not os.path.isabs(x):
-            return [False, x, 'FITS file path is not absolute']
+            return [False, x, 1]
         try:
             cube = acalib.io.loadFITS_PrimaryOnly(x)
         except IOError:
-            return [False, x, 'IOError']
+            return [False, x, 2]
         except MemoryError:
-            return [False, x, 'MemoryError']
+            return [False, x, 3]
         return [True, x, cube]
 
     def __indexing_denoise(self, item):
@@ -203,7 +217,7 @@ class IndexingDask(object):
             if len(slices) > 0:
                 return [True, item[1], slices]
             else:
-                return [False, item[1], 'spectra_sketch returned empty slices']
+                return [False, item[1], 4]
         return item
 
     def __gms_vel_stacking(self, item_cube, item_slice):
