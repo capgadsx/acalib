@@ -134,6 +134,8 @@ class IndexingDask(object):
         for future, result in completed_results:
             op_result, fits, algo_output = result
             print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
+        for future in dask_futures:
+            future.release()
         pass
 
     def __compute_result_to_string(self, operation_result, result_code):
