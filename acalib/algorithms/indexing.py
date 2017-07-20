@@ -129,11 +129,11 @@ class IndexingDask(object):
     def run(self, files):
         client = distributed.Client(self.scheduler)
         indexing_pipeline = self.__create_pipeline(files)
-        results = client.compute(indexing_pipeline)
-        for future in distributed.as_completed(results):
-            operation_result, object_name, indexing_output = future.result()
-            object_name = os.path.basename(object_name)
-            print('Compute finished for '+object_name+'. ['+self.__compute_result_to_string(operation_result, indexing_output)+']')
+        dask_futures = client.compute(indexing_pipeline)
+        completed_results = distributed.as_completed(dask_futures, with_results=True)
+        for future, result in completed_results:
+            op_result, fits, algo_output = result
+            print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
         pass
 
     def __compute_result_to_string(self, operation_result, result_code):
