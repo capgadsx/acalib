@@ -128,7 +128,7 @@ class IndexingDask(object):
     
     def run(self, files):
         client = distributed.Client(self.scheduler)
-        indexing_pipeline = self.__create_pipeline(files, self.gms_percentile)
+        indexing_pipeline = self.__create_pipeline(files, self.gms_percentile, self.precision)
         dask_futures = client.compute(indexing_pipeline)
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
@@ -153,7 +153,7 @@ class IndexingDask(object):
         for future in distributed.client.futures_of(futures):
             future.release()
 
-    def __create_pipeline(self, files, param_gms_p):
+    def __create_pipeline(self, files, param_gms_p, param_precision):
         load = lambda fits: self.__indexing_load(fits)
         load.__name__ = 'load-fits'
         denoise = lambda cube: self.__indexing_denoise(cube)
@@ -164,7 +164,7 @@ class IndexingDask(object):
         vel_stacking.__name__ = 'vel-stacking'
         get_w_gms = lambda stacked_images, gms_p: self.__gms_optimal_w(stacked_images, gms_p)
         get_w_gms.__name__ = 'gms-optimal-w'
-        gms = lambda stacked_image, w_value: self.__gms(stacked_image, w_value)
+        gms = lambda stacked_image, w_value, precision: self.__gms(stacked_image, w_value, precision)
         gms.__name__ = 'gms'
         measure_shape = lambda cube, stacked_images, slices, labeled_images: self.__indexing_measure_shape(cube, stacked_images, slices, labeled_images)
         measure_shape.__name__ = 'measure-shape'
@@ -187,7 +187,7 @@ class IndexingDask(object):
             items_w_values_for_gms.append(item)
         items_gms_results = []
         for index, item_stacked_cube in enumerate(items_velocity_stacked_cubes):
-            item = dask.delayed(gms)(item_stacked_cube, items_w_values_for_gms[index])
+            item = dask.delayed(gms)(item_stacked_cube, items_w_values_for_gms[index], param_precision)
             items_gms_results.append(item)
         items_indexing_results = []
         for index, item_gms_result in enumerate(items_gms_results):
@@ -331,14 +331,14 @@ class IndexingDask(object):
                 radius = overall[1]
         return radius
 
-    def __gms(self, item_stacked_images, item_w):
+    def __gms(self, item_stacked_images, item_w, param_precision_value):
         if item_stacked_images[0]:
             w_max = item_w[2][0]
             gms_results = []
-            compute_gms = lambda image, w_value: self.__gms_compute(image, w_value)
+            compute_gms = lambda image, w_value, precision_value: self.__gms_compute(image, w_value, precision_value)
             compute_gms.__name__ = 'compute-gms'
             for image in item_stacked_images[2]:
-                x = dask.delayed(compute_gms)(image, w_max)
+                x = dask.delayed(compute_gms)(image, w_max, param_precision_value)
                 gms_results.append(x)
             results = None
             with distributed.worker_client() as client:
@@ -349,14 +349,14 @@ class IndexingDask(object):
         return item_stacked_images
 
     #TODO: Maybe we should test this function with numba jit for better performance
-    def __gms_compute(self, image, w_max):
+    def __gms_compute(self, image, w_max, precision_value):
         if len(image.shape) > 2:
             raise ValueError('Only 2D data cubes supported')
         dims = image.shape
         rows = dims[0]
         cols = dims[1]
         size = numpy.min([rows, cols])
-        precision = size * self.precision
+        precision = size * precision_value
         image = image.astype('float64')
         diff = (image - numpy.min(image)) / (numpy.max(image) - numpy.min(image))
         tt = w_max ** 2
@@ -365,7 +365,7 @@ class IndexingDask(object):
         threshold_val = threshold_local(diff, int(tt), method='mean', offset=0)
         g = diff > threshold_val
         r = w_max / 2
-        rMin = 2 * numpy.round(self.precision)
+        rMin = 2 * numpy.round(precision_value)
         image_list = []
         while r > rMin:
             background = numpy.zeros((rows, cols))
