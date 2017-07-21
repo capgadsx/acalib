@@ -418,7 +418,7 @@ class IndexingDask(object):
             results = None
             with distributed.worker_client() as client:
                 tables_results = client.compute(tables_results)
-                tables_results = client.gather(tables_results)
+                results = client.gather(tables_results)
                 self.__indexing_dask_release_futures(tables_results)
             return [True, item_cube[1], results]
         return item_labeled_images
