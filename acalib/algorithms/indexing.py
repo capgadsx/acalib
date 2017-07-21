@@ -108,7 +108,6 @@ class IndexingDask(object):
     __valid_fields = ['gms_percentile', 'precision', 'random_state', 'samples', 'scheduler']
 
     def __init__(self):
-        #TODO: Pass parameters to use when re-launching tasks that failed
         self.gms_percentile = 0.05
         self.precision = 0.02 
         self.random_state = None
@@ -134,7 +133,13 @@ class IndexingDask(object):
         for future, result in completed_results:
             op_result, fits, algo_output = result
             print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
+            self.__process_compute_result(op_result, os.path.basename(fits), algo_output)
         self.__indexing_dask_release_futures(dask_futures)
+
+    def __process_compute_result(self, operation_result, object_name, indexing_output):
+        if operation_result:
+            for idx, table in enumerate(indexing_output):
+                print('['+object_name+']: Table '+str(idx)+' contains '+str(len(table.columns[0]))+' rows')
 
     def __compute_result_to_string(self, operation_result, result_code):
         if not operation_result:
@@ -348,7 +353,6 @@ class IndexingDask(object):
             return [True, item_stacked_images[1], results]
         return item_stacked_images
 
-    #TODO: Maybe we should test this function with numba jit for better performance
     def __gms_compute(self, image, w_max, precision_value):
         if len(image.shape) > 2:
             raise ValueError('Only 2D data cubes supported')
