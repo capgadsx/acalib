@@ -128,7 +128,7 @@ class IndexingDask(object):
     
     def run(self, files):
         client = distributed.Client(self.scheduler)
-        indexing_pipeline = self.__create_pipeline(files)
+        indexing_pipeline = self.__create_pipeline(files, self.gms_percentile)
         dask_futures = client.compute(indexing_pipeline)
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
@@ -139,7 +139,7 @@ class IndexingDask(object):
     def __compute_result_to_string(self, operation_result, result_code):
         if not operation_result:
             if result_code == 1:
-                return 'ValueError: The FITS file path is not an absolute path'
+                return 'ValueError: The FITS file path is not an absolute path' 
             elif result_code == 2:
                 return 'IOError: Malformed or corrupted FITS file'
             elif result_code == 3:
@@ -153,7 +153,7 @@ class IndexingDask(object):
         for future in distributed.client.futures_of(futures):
             future.release()
 
-    def __create_pipeline(self, files):
+    def __create_pipeline(self, files, param_gms_p):
         load = lambda fits: self.__indexing_load(fits)
         load.__name__ = 'load-fits'
         denoise = lambda cube: self.__indexing_denoise(cube)
@@ -162,7 +162,7 @@ class IndexingDask(object):
         get_slices.__name__ = 'slice-cube'
         vel_stacking = lambda cube, slice: self.__gms_vel_stacking(cube, slice)
         vel_stacking.__name__ = 'vel-stacking'
-        get_w_gms = lambda stacked_images: self.__gms_optimal_w(stacked_images)
+        get_w_gms = lambda stacked_images, gms_p: self.__gms_optimal_w(stacked_images, gms_p)
         get_w_gms.__name__ = 'gms-optimal-w'
         gms = lambda stacked_image, w_value: self.__gms(stacked_image, w_value)
         gms.__name__ = 'gms'
@@ -183,7 +183,7 @@ class IndexingDask(object):
             items_velocity_stacked_cubes.append(item)
         items_w_values_for_gms = []
         for i in items_velocity_stacked_cubes:
-            item = dask.delayed(get_w_gms)(i)
+            item = dask.delayed(get_w_gms)(i, param_gms_p)
             items_w_values_for_gms.append(item)
         items_gms_results = []
         for index, item_stacked_cube in enumerate(items_velocity_stacked_cubes):
@@ -244,13 +244,13 @@ class IndexingDask(object):
         cube[numpy.isnan(cube)] = 0
         return cube
 
-    def __gms_optimal_w(self, item_with_stacked_images):
+    def __gms_optimal_w(self, item_with_stacked_images, gms_p_value):
         if item_with_stacked_images[0]:
             w_delayed = lambda image, p_value: self.__gms_optimal_w_compute(image, p_value)
             w_delayed.__name__ = 'compute-optimal-w'
             optimal_w_results = []
             for stacked_image in item_with_stacked_images[2]:
-                x = dask.delayed(w_delayed)(stacked_image, self.gms_percentile)
+                x = dask.delayed(w_delayed)(stacked_image, gms_p_value)
                 optimal_w_results.append(x)
             with distributed.worker_client() as client:
                 optimal_w_results = client.compute(optimal_w_results)
