@@ -134,9 +134,7 @@ class IndexingDask(object):
         for future, result in completed_results:
             op_result, fits, algo_output = result
             print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
-        for future in dask_futures:
-            future.release()
-        pass
+        self.__indexing_dask_release_futures(dask_futures)
 
     def __compute_result_to_string(self, operation_result, result_code):
         if not operation_result:
@@ -150,6 +148,10 @@ class IndexingDask(object):
                 return 'RuntimeError: With the given parameters, the algorithm returned empty slices for this FITS'
         else:
             return 'Success'
+
+    def __indexing_dask_release_futures(self, futures):
+        for future in distributed.client.futures_of(futures):
+            future.release()
 
     def __create_pipeline(self, files):
         load = lambda fits: self.__indexing_load(fits)
@@ -232,8 +234,9 @@ class IndexingDask(object):
                 velocity_stacked_cubes.append(velocity_stacked_cube)
             with distributed.worker_client() as client:
                 velocity_stacked_cubes = client.compute(velocity_stacked_cubes)
-                velocity_stacked_cubes = client.gather(velocity_stacked_cubes)
-            return [True, item_cube[1], velocity_stacked_cubes]
+                results = client.gather(velocity_stacked_cubes)
+                self.__indexing_dask_release_futures(velocity_stacked_cubes)
+            return [True, item_cube[1], results]
         return item_slice
 
     def __gms_vel_stacking_delayed(self, cube, slice):
@@ -251,8 +254,9 @@ class IndexingDask(object):
                 optimal_w_results.append(x)
             with distributed.worker_client() as client:
                 optimal_w_results = client.compute(optimal_w_results)
-                optimal_w_results = client.gather(optimal_w_results)
-            return [True, item_with_stacked_images[1], optimal_w_results]
+                results = client.gather(optimal_w_results)
+                self.__indexing_dask_release_futures(optimal_w_results)
+            return [True, item_with_stacked_images[1], results]
         return item_with_stacked_images
 
     def __gms_optimal_w_compute(self, image, p):
@@ -280,15 +284,19 @@ class IndexingDask(object):
         threshold.__name__ = 'max-w-threshold'
         get_radius = lambda overalls, minimum, radius: self.__gms_optimal_w_get_min_overall(overalls, minimum, radius)
         get_radius.__name__ = 'find-minimal-w'
-        while radius <= radiusMax:
-            x = dask.delayed(threshold)(image, radius, bg, fg)
-            overalls.append(x)
-            radius += inc
-        radius_with_min_overall = dask.delayed(get_radius)(overalls, min_ov, radius)
+        result = 0
         with distributed.worker_client() as client:
+            image_future = client.scatter(image)
+            while radius <= radiusMax:
+                x = dask.delayed(threshold)(image_future, radius, bg, fg)
+                overalls.append(x)
+                radius += inc
+            radius_with_min_overall = dask.delayed(get_radius)(overalls, min_ov, radius)
             radius_with_min_overall = client.compute(radius_with_min_overall)
-            radius_with_min_overall = client.gather(radius_with_min_overall)
-        return radius_with_min_overall
+            result = client.gather(radius_with_min_overall)
+            self.__indexing_dask_release_futures(radius_with_min_overall)
+            self.__indexing_dask_release_futures(image_future)
+        return result
 
     def __gms_optimal_w_threshold(self, image, radius, bg, fg):
         tt = int(radius ** 2)
@@ -332,10 +340,12 @@ class IndexingDask(object):
             for image in item_stacked_images[2]:
                 x = dask.delayed(compute_gms)(image, w_max)
                 gms_results.append(x)
+            results = None
             with distributed.worker_client() as client:
                 gms_results = client.compute(gms_results)
-                gms_results = client.gather(gms_results)
-            return [True, item_stacked_images[1], gms_results]
+                results = client.gather(gms_results)
+                self.__indexing_dask_release_futures(gms_results)
+            return [True, item_stacked_images[1], results]
         return item_stacked_images
 
     #TODO: Maybe we should test this function with numba jit for better performance
@@ -405,8 +415,10 @@ class IndexingDask(object):
                     freq_max = float(cube.wcs.all_pix2world(0, 0, slices[i].stop, 1)[2])
                 table = dask.delayed(get_table)(vel_stacked_image, labeled_images[i], freq_min, freq_max)
                 tables_results.append(table)
+            results = None
             with distributed.worker_client() as client:
                 tables_results = client.compute(tables_results)
                 tables_results = client.gather(tables_results)
-            return [True, item_cube[1], tables_results]
+                self.__indexing_dask_release_futures(tables_results)
+            return [True, item_cube[1], results]
         return item_labeled_images
