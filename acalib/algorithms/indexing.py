@@ -131,7 +131,7 @@ class IndexingDask(object):
         dask_futures = client.compute(indexing_pipeline)
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
-            op_result, algo_output = result
+            object_name, algo_output, parameters_used = result
             #print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
             #self.__process_compute_result(op_result, os.path.basename(fits), algo_output)
         self.__indexing_dask_release_futures(dask_futures)
@@ -158,6 +158,11 @@ class IndexingDask(object):
         for future in distributed.client.futures_of(futures):
             future.release()
 
+    def __indexing_format_output(self, fits_path, result, gms_p_used, precision_used):
+        if result[0]:
+            return [os.path.basename(fits_path), result[1], (gms_p_used, precision_used)]
+        return [os.path.basename(fits_path), None, (gms_p_used, precision_used)]
+
     def __create_pipeline(self, files, param_gms_p, param_precision):
         load = lambda fits: self.__indexing_load(fits)
         load.__name__ = 'load-fits'
@@ -173,6 +178,8 @@ class IndexingDask(object):
         gms.__name__ = 'gms'
         measure_shape = lambda cube, stacked_images, slices, labeled_images: self.__indexing_measure_shape(cube, stacked_images, slices, labeled_images)
         measure_shape.__name__ = 'measure-shape'
+        output = lambda fits, result, gms_p, precision: self.__indexing_format_output(fits, result, gms_p, precision)
+        output.__name__ = 'output'
         items_denoised_cubes = []
         for i in files:
             item = dask.delayed(load)(i)
@@ -201,7 +208,11 @@ class IndexingDask(object):
                                                 items_cube_slices[index],
                                                 item_gms_result)
             items_indexing_results.append(item)
-        return items_indexing_results
+        results = []
+        for index, indexing_result in enumerate(items_indexing_results):
+            result = dask.delayed(output)(files[index], indexing_result, param_gms_p, param_precision)
+            results.append(result)
+        return results
     
     def __indexing_load(self, x):
         if not os.path.isabs(x):
