@@ -1,9 +1,9 @@
-import os
 import dask
 import numpy
 import acalib
 import distributed
 from .gms import GMS
+from os.path import basename, isabs
 from .algorithm import Algorithm
 from astropy.nddata import NDDataRef, NDData
 from skimage.filters import threshold_local
@@ -157,7 +157,7 @@ class IndexingDask(object):
             future.release()
 
     def __indexing_format_output(self, fits_path, result, gms_p_used, precision_used):
-        return [os.path.basename(fits_path), result[1], (gms_p_used, precision_used)]
+        return [basename(fits_path).split('.')[0], result[1], (gms_p_used, precision_used)]
 
     def __create_pipeline(self, files, param_gms_p, param_precision):
         load = lambda fits: self.__indexing_load(fits)
@@ -211,7 +211,7 @@ class IndexingDask(object):
         return results
     
     def __indexing_load(self, x):
-        if not os.path.isabs(x):
+        if not isabs(x):
             return [False, 1]
         try:
             cube = acalib.io.loadFITS_PrimaryOnly(x)
