@@ -132,36 +132,32 @@ class IndexingDask(object):
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
             object_name, algo_output, parameters_used = result
-            #print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
-            #self.__process_compute_result(op_result, os.path.basename(fits), algo_output)
+            self.__process_compute_result(object_name, algo_output, parameters_used)
+            self.__indexing_dask_release_futures(future)
         self.__indexing_dask_release_futures(dask_futures)
 
-    def __process_compute_result(self, operation_result, object_name, indexing_output):
-        if operation_result:
-            for idx, table in enumerate(indexing_output):
-                print('['+object_name+']: Table '+str(idx)+' contains '+str(len(table.columns[0]))+' rows')
-
-    def __compute_result_to_string(self, operation_result, result_code):
-        if not operation_result:
-            if result_code == 1:
-                return 'ValueError: The FITS file path is not an absolute path' 
-            elif result_code == 2:
-                return 'IOError: Malformed or corrupted FITS file'
-            elif result_code == 3:
-                return 'MemoryError: The Primary HDU of the FITS file does not fit in memory'
-            elif result_code == 4:
-                return 'RuntimeError: With the given parameters, the algorithm returned empty slices for this FITS'
+    def __process_compute_result(self, object_name, indexing_output, parameters_used):
+        if type(indexing_output) is not int:
+            print('Compute finished for: '+object_name+'. ['+str(parameters_used)+' => '+str(len(indexing_output))+' tables]')
         else:
-            return 'Success'
+            print('Compute failed for: '+object_name+'. ['+self.__failed_result_code_to_string(indexing_output)+']')
+
+    def __failed_result_code_to_string(self, result_code):
+        if result_code == 1:
+            return 'ValueError: The FITS file path is not an absolute path' 
+        elif result_code == 2:
+            return 'IOError: Malformed or corrupted FITS file'
+        elif result_code == 3:
+            return 'MemoryError: The Primary HDU of the FITS file does not fit in memory'
+        elif result_code == 4:
+            return 'RuntimeError: With the given parameters, the algorithm returned empty slices for this FITS'
 
     def __indexing_dask_release_futures(self, futures):
         for future in distributed.client.futures_of(futures):
             future.release()
 
     def __indexing_format_output(self, fits_path, result, gms_p_used, precision_used):
-        if result[0]:
-            return [os.path.basename(fits_path), result[1], (gms_p_used, precision_used)]
-        return [os.path.basename(fits_path), None, (gms_p_used, precision_used)]
+        return [os.path.basename(fits_path), result[1], (gms_p_used, precision_used)]
 
     def __create_pipeline(self, files, param_gms_p, param_precision):
         load = lambda fits: self.__indexing_load(fits)
