@@ -131,9 +131,9 @@ class IndexingDask(object):
         dask_futures = client.compute(indexing_pipeline)
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
-            op_result, fits, algo_output = result
-            print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
-            self.__process_compute_result(op_result, os.path.basename(fits), algo_output)
+            op_result, algo_output = result
+            #print('Compute finished for '+os.path.basename(fits)+'. ['+self.__compute_result_to_string(op_result, algo_output)+']')
+            #self.__process_compute_result(op_result, os.path.basename(fits), algo_output)
         self.__indexing_dask_release_futures(dask_futures)
 
     def __process_compute_result(self, operation_result, object_name, indexing_output):
@@ -205,28 +205,28 @@ class IndexingDask(object):
     
     def __indexing_load(self, x):
         if not os.path.isabs(x):
-            return [False, x, 1]
+            return [False, 1]
         try:
             cube = acalib.io.loadFITS_PrimaryOnly(x)
         except IOError:
-            return [False, x, 2]
+            return [False, 2]
         except MemoryError:
-            return [False, x, 3]
-        return [True, x, cube]
+            return [False, 3]
+        return [True, cube]
 
     def __indexing_denoise(self, item):
         if item[0]:
             noise_level = acalib.noise_level(item[2])
-            return [True, item[1], acalib.denoise(item[2], threshold=noise_level)]
+            return [True, acalib.denoise(item[2], threshold=noise_level)]
         return item
 
     def __indexing_spectra(self, item):
         if item[0]:
             slices = acalib.core.spectra_sketch(item[2].data, self.samples, self.random_state)[1]
             if len(slices) > 0:
-                return [True, item[1], slices]
+                return [True, slices]
             else:
-                return [False, item[1], 4]
+                return [False, 4]
         return item
 
     def __gms_vel_stacking(self, item_cube, item_slice):
@@ -241,7 +241,7 @@ class IndexingDask(object):
                 velocity_stacked_cubes = client.compute(velocity_stacked_cubes)
                 results = client.gather(velocity_stacked_cubes)
                 self.__indexing_dask_release_futures(velocity_stacked_cubes)
-            return [True, item_cube[1], results]
+            return [True, results]
         return item_slice
 
     def __gms_vel_stacking_delayed(self, cube, slice):
@@ -261,7 +261,7 @@ class IndexingDask(object):
                 optimal_w_results = client.compute(optimal_w_results)
                 results = client.gather(optimal_w_results)
                 self.__indexing_dask_release_futures(optimal_w_results)
-            return [True, item_with_stacked_images[1], results]
+            return [True, results]
         return item_with_stacked_images
 
     def __gms_optimal_w_compute(self, image, p):
@@ -350,7 +350,7 @@ class IndexingDask(object):
                 gms_results = client.compute(gms_results)
                 results = client.gather(gms_results)
                 self.__indexing_dask_release_futures(gms_results)
-            return [True, item_stacked_images[1], results]
+            return [True, results]
         return item_stacked_images
 
     def __gms_compute(self, image, w_max, precision_value):
@@ -424,5 +424,5 @@ class IndexingDask(object):
                 tables_results = client.compute(tables_results)
                 results = client.gather(tables_results)
                 self.__indexing_dask_release_futures(tables_results)
-            return [True, item_cube[1], results]
+            return [True, results]
         return item_labeled_images
