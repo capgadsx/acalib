@@ -126,9 +126,11 @@ class IndexingDask(object):
         super(IndexingDask, self).__setattr__(name, value)
     
     def run(self, files):
+        print('Connecting to scheduler at '+self.scheduler)
         client = distributed.Client(self.scheduler)
         indexing_pipeline = self.__create_pipeline(files, self.gms_percentile, self.precision)
         dask_futures = client.compute(indexing_pipeline)
+        print('Computing Indexing with '+str(len(client.ncores()))+' workers ('+str(sum(client.ncores().values()))+' cores)')
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
             object_name, algo_output, parameters_used = result
