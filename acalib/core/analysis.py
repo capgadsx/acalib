@@ -159,6 +159,8 @@ def measure_shape(data, labeled_images, min_freq=None, max_freq=None, wcs=None):
     if max_freq is not None:
         meta["max_freq_hz"] = max_freq
 
+    meta['target'] = data.meta['OBJECT']
+
     t = Table(rows=objects, names=names, meta=meta)
     return t
 
@@ -203,7 +205,7 @@ def spectra_sketch(data, samples, random_state=None):
     for pixel in pixels:
         pixel_masked = _pixel_processing(pixel)
         spectra += pixel_masked
-    
+
     spectra = _pixel_processing(spectra)
 
     slices = []
