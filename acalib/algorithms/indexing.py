@@ -3,8 +3,9 @@ import numpy
 import acalib
 import distributed
 from .gms import GMS
-from os.path import basename, isabs
 from .algorithm import Algorithm
+from collections import namedtuple
+from os.path import basename, isabs
 from astropy.nddata import NDDataRef, NDData
 from skimage.filters import threshold_local
 from skimage.measure import label,regionprops
