@@ -110,7 +110,7 @@ class IndexingDask(object):
 
     def __init__(self):
         self.gms_percentile = 0.05
-        self.precision = 0.02 
+        self.precision = 0.02
         self.random_state = None
         self.samples = 1000
         self.scheduler = '127.0.0.1:8786'
@@ -125,13 +125,13 @@ class IndexingDask(object):
         if name not in self.__valid_fields:
             raise ValueError(name+' is not a valid field')
         super(IndexingDask, self).__setattr__(name, value)
-    
+
     def run(self, files):
         print('Connecting to scheduler at '+self.scheduler)
         client = distributed.Client(self.scheduler)
         indexing_pipeline = self.__create_pipeline(files, self.gms_percentile, self.precision)
         dask_futures = client.compute(indexing_pipeline)
-        print('Computing Indexing with '+str(len(client.ncores()))+' workers ('+str(sum(client.ncores().values()))+' cores)')
+        print('Computing Indexing on '+str(len(files))+' files with '+str(len(client.ncores()))+' workers ('+str(sum(client.ncores().values()))+' cores)')
         completed_results = distributed.as_completed(dask_futures, with_results=True)
         for future, result in completed_results:
             object_name, algo_output, parameters_used = result
@@ -141,13 +141,23 @@ class IndexingDask(object):
 
     def __process_compute_result(self, object_name, indexing_output, parameters_used):
         if type(indexing_output) is not int:
-            print('Compute finished for: '+object_name+'. ['+str(parameters_used)+' => '+str(len(indexing_output))+' tables]')
+            result_str = '======================RESULTS FOR '+object_name+'======================'
+            print(result_str)
+            print('Parameters: GMS_Percentile: '+str(parameters_used[0])+'   Precision: '+str(parameters_used[1]))
+            print('Result: '+str(len(indexing_output))+' tables')
+            rows_per_table = 0
+            for index, table in enumerate(indexing_output):
+                print('Table '+str(index+1)+': '+str(len(table))+' rows')
+                rows_per_table += len(table)
+            rows_per_table /= len(indexing_output)
+            print('Average rows per table: '+str(rows_per_table))
+            print('='*len(result_str))
         else:
             print('Compute failed for: '+object_name+'. ['+self.__failed_result_code_to_string(indexing_output)+']')
 
     def __failed_result_code_to_string(self, result_code):
         if result_code == 1:
-            return 'ValueError: The FITS file path is not an absolute path' 
+            return 'ValueError: The FITS file path is not an absolute path'
         elif result_code == 2:
             return 'IOError: Malformed or corrupted FITS file'
         elif result_code == 3:
@@ -212,7 +222,7 @@ class IndexingDask(object):
             result = dask.delayed(output)(files[index], indexing_result, param_gms_p, param_precision)
             results.append(result)
         return results
-    
+
     def __indexing_load(self, x):
         if not isabs(x):
             return [False, 1]
