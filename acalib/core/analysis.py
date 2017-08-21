@@ -159,7 +159,10 @@ def measure_shape(data, labeled_images, min_freq=None, max_freq=None, wcs=None):
     if max_freq is not None:
         meta["max_freq_hz"] = max_freq
 
-    meta['target'] = data.meta['OBJECT']
+    if hasattr(data, 'meta'):
+        meta['target'] = data.meta['OBJECT']
+    else:
+        meta['target'] = ''
 
     t = Table(rows=objects, names=names, meta=meta)
     return t
